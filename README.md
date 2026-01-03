@@ -145,6 +145,3 @@ This project focuses on understanding:
 - Classpath and JAR execution
 - Build tooling with Maven
 - Server architecture fundamentals
-
-Understanding these concepts makes you a stronger backend engineer and helps you use
-frameworks with confidence rather than treating them as magic.
