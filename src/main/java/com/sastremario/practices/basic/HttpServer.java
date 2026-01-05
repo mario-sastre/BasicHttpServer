@@ -3,7 +3,11 @@ package com.sastremario.practices.basic;
 import java.io.*;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.SocketException;
 import java.time.LocalDateTime;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 /**
  * @author Mario Sastre
@@ -11,21 +15,44 @@ import java.time.LocalDateTime;
  */
 public class HttpServer
 {
+    private static volatile ServerState state = ServerState.STARTING;
+
+    private static final int PORT = 8082;
+    private static final int THREAD_POOL_SIZE = 20;
+
+    private static volatile boolean running = true;
+    private static ExecutorService executor;
+    private static ServerSocket serverSocket;
     private static final Router router = new Router();
 
     public static void main( String[] args ) throws IOException {
         registerRoutes();
 
-        ServerSocket serverSocket = new ServerSocket(8082);
-        System.out.println("Sever listening on port 8082");
+        executor = Executors.newFixedThreadPool(THREAD_POOL_SIZE);
+        serverSocket = new ServerSocket(PORT);
 
-        while(true){
-            Socket client = serverSocket.accept();
-            new Thread(() -> handle(client)).start();
+        Runtime.getRuntime().addShutdownHook(new Thread(HttpServer::shutdown));
+
+        state = ServerState.RUNNING;
+        System.out.println("Sever listening on port " + PORT);
+
+        while(state == ServerState.RUNNING){
+            try{
+                Socket clientSocket = serverSocket.accept();
+                executor.submit(() -> handle(clientSocket));
+            } catch(SocketException e){
+                if(state == ServerState.RUNNING) e.printStackTrace();
+            }
         }
     }
 
     private static void handle(Socket client){
+        if(state != ServerState.RUNNING){
+            try{
+                client.close();
+            } catch(IOException ignored){}
+            return;
+        }
         try(
             BufferedReader in = new BufferedReader(new InputStreamReader(client.getInputStream()));
             OutputStream out = client.getOutputStream()
@@ -70,6 +97,41 @@ public class HttpServer
         router.post("/echo", (req, res) ->{
             res.setBody("You posted: " + req.body);
         });
+
+        router.get("/health", (req, res) -> {
+           if(state == ServerState.RUNNING){
+                res.setBody("OK");
+           } else{
+               res.setStatus(503, "Service Unavailable");
+               res.setBody("NOT OK");
+           }
+        });
     }
 
+    private static void shutdown(){
+        if(state != ServerState.RUNNING) return; // already shutting down or stopped
+
+        System.out.println("\nShutting down server...");
+        state = ServerState.STOPPING;
+
+        try{
+            serverSocket.close(); //we close the server socket to stop accepting new connections, unblocking accept()
+        }catch (IOException e){
+            e.printStackTrace();
+        }
+
+        executor.shutdown(); // we stop accepting new tasks
+
+        try{
+            if(!executor.awaitTermination(5, TimeUnit.SECONDS)){
+                executor.shutdownNow(); // let's force shutdown if not terminated in time
+            }
+        } catch(InterruptedException e){
+            executor.shutdownNow(); // something interrupted the wait, let's force shutdown
+            Thread.currentThread().interrupt();
+        }
+
+        state = ServerState.STOPPED;
+        System.out.println("Server stopped");
+    }
 }
